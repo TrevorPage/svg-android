@@ -3,8 +3,8 @@ package com.larvalabs.svgandroid;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.graphics.*;
-import android.graphics.drawable.PictureDrawable;
 import android.util.Log;
+import com.larvalabs.svgandroid.tree.*;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -49,7 +49,6 @@ import java.util.HashMap;
  * @see #getSVGFromAsset(android.content.res.AssetManager, String)
  * @see #getSVGFromString(String)
  * @see #getSVGFromInputStream(java.io.InputStream)
- * @see #parsePath(String)
  */
 public class SVGParser {
 
@@ -163,16 +162,6 @@ public class SVGParser {
         return svg;
     }
 
-    /**
-     * Parses a single SVG path and returns it as a <code>android.graphics.Path</code> object.
-     * An example path is <code>M250,150L150,350L350,350Z</code>, which draws a triangle.
-     *
-     * @param pathString the SVG path, see the specification <a href="http://www.w3.org/TR/SVG/paths.html">here</a>.
-     */
-    public static Path parsePath(String pathString) {
-        return doPath(pathString);
-    }
-
     private static SVG parse(InputStream in, Integer searchColor, Integer replaceColor, boolean whiteMode) throws SVGParseException {
 //        Util.debug("Parsing SVG...");
         try {
@@ -180,19 +169,19 @@ public class SVGParser {
             SAXParserFactory spf = SAXParserFactory.newInstance();
             SAXParser sp = spf.newSAXParser();
             XMLReader xr = sp.getXMLReader();
-            final Picture picture = new Picture();
-            SVGHandler handler = new SVGHandler(picture);
+
+            final SVG svg = new SVG();
+
+            SVGHandler handler = new SVGHandler(svg);
             handler.setColorSwap(searchColor, replaceColor);
             handler.setWhiteMode(whiteMode);
+
             xr.setContentHandler(handler);
             xr.parse(new InputSource(in));
+
 //        Util.debug("Parsing complete in " + (System.currentTimeMillis() - start) + " millis.");
-            SVG result = new SVG(picture, handler.bounds);
-            // Skip bounds if it was an empty pic
-            if (!Float.isInfinite(handler.limits.top)) {
-                result.setLimits(handler.limits);
-            }
-            return result;
+
+            return svg;
         } catch (Exception e) {
             throw new SVGParseException(e);
         }
@@ -279,7 +268,9 @@ public class SVGParser {
         return new NumberParse(numbers, p);
     }
 
-    private static Matrix parseTransform(String s) {
+    private static Matrix doTransform(String s) {
+        if(s == null) return null;
+
         if (s.startsWith("matrix(")) {
             NumberParse np = parseNumbers(s.substring("matrix(".length()));
             if (np.numbers.size() == 6) {
@@ -358,6 +349,10 @@ public class SVGParser {
             }
         }
         return null;
+    }
+
+    private static boolean doVisibility(String s) {
+        return !"none".equals(s);
     }
 
     /**
@@ -567,6 +562,7 @@ public class SVGParser {
 
     private static void drawArc(Path p, float lastX, float lastY, float x, float y, float rx, float ry, float theta, int largeArc, int sweepArc) {
         // todo - not implemented yet, may be very hard to do using Android drawing facilities.
+        Log.e(TAG, "Arc Not Yet Implemented");
     }
 
     private static NumberParse getNumberParseAttr(String name, Attributes attributes) {
@@ -762,13 +758,10 @@ public class SVGParser {
 
     private static class SVGHandler extends DefaultHandler {
 
-        Picture picture;
-        Canvas canvas;
+        SVG svg;
         Paint paint;
         // Scratch rect (so we aren't constantly making new ones)
         RectF rect = new RectF();
-        RectF bounds = null;
-        RectF limits = new RectF(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY);
 
         Integer searchColor = null;
         Integer replaceColor = null;
@@ -781,8 +774,10 @@ public class SVGParser {
         HashMap<String, Gradient> gradientRefMap = new HashMap<String, Gradient>();
         Gradient gradient = null;
 
-        private SVGHandler(Picture picture) {
-            this.picture = picture;
+        SVGGroup currentGroupNode;
+
+        private SVGHandler(SVG svg) {
+            this.svg = svg;
             paint = new Paint();
             paint.setAntiAlias(true);
         }
@@ -798,18 +793,15 @@ public class SVGParser {
 
         @Override
         public void startDocument() throws SAXException {
-            // Set up prior to parsing a doc
+
         }
 
         @Override
         public void endDocument() throws SAXException {
-            // Clean up after parsing a doc
+
         }
 
         private boolean doFill(Properties atts, HashMap<String, Shader> gradients) {
-            if ("none".equals(atts.getString("display"))) {
-                return false;
-            }
             if (whiteMode) {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(0xFFFFFFFF);
@@ -849,9 +841,6 @@ public class SVGParser {
         private boolean doStroke(Properties atts) {
             if (whiteMode) {
                 // Never stroke in white mode
-                return false;
-            }
-            if ("none".equals(atts.getString("display"))) {
                 return false;
             }
             Integer color = atts.getHex("stroke");
@@ -902,7 +891,7 @@ public class SVGParser {
             }
             String transform = getStringAttr("gradientTransform", atts);
             if (transform != null) {
-                gradient.matrix = parseTransform(transform);
+                gradient.matrix = doTransform(transform);
             }
             String xlink = getStringAttr("href", atts);
             if (xlink != null) {
@@ -931,77 +920,18 @@ public class SVGParser {
             }
         }
 
-        private boolean hidden = false;
-        private int hiddenLevel = 0;
-        private boolean boundsMode = false;
-
-        private void doLimits(float x, float y) {
-            if (x < limits.left) {
-                limits.left = x;
-            }
-            if (x > limits.right) {
-                limits.right = x;
-            }
-            if (y < limits.top) {
-                limits.top = y;
-            }
-            if (y > limits.bottom) {
-                limits.bottom = y;
-            }
-        }
-
-        private void doLimits(float x, float y, float width, float height) {
-            doLimits(x, y);
-            doLimits(x + width, y + height);
-        }
-
-        private void doLimits(Path path) {
-            path.computeBounds(rect, false);
-            doLimits(rect.left, rect.top);
-            doLimits(rect.right, rect.bottom);
-        }
-
-        private void pushTransform(Attributes atts) {
-            final String transform = getStringAttr("transform", atts);
-            pushed = transform != null;
-            if (pushed) {
-                final Matrix matrix = parseTransform(transform);
-                canvas.save();
-                canvas.concat(matrix);
-            }
-        }
-
-        private void popTransform() {
-            if (pushed) {
-                canvas.restore();
-            }
-        }
-
         @Override
         public void startElement(String namespaceURI, String localName, String qName, Attributes atts) throws SAXException {
             // Reset paint opacity
             paint.setAlpha(255);
-            // Ignore everything but rectangles in bounds mode
-            if (boundsMode) {
-                if (localName.equals("rect")) {
-                    Float x = getFloatAttr("x", atts);
-                    if (x == null) {
-                        x = 0f;
-                    }
-                    Float y = getFloatAttr("y", atts);
-                    if (y == null) {
-                        y = 0f;
-                    }
-                    Float width = getFloatAttr("width", atts);
-                    Float height = getFloatAttr("height", atts);
-                    bounds = new RectF(x, y, x + width, y + width);
-                }
-                return;
-            }
             if (localName.equals("svg")) {
                 int width = (int) Math.ceil(getFloatAttr("width", atts));
                 int height = (int) Math.ceil(getFloatAttr("height", atts));
-                canvas = picture.beginRecording(width, height);
+
+                svg.setId(getStringAttr("id", atts));
+                svg.setVisibility(doVisibility(getStringAttr("d", atts)));
+
+                currentGroupNode = svg;
             } else if (localName.equals("defs")) {
                 // Ignore
             } else if (localName.equals("linearGradient")) {
@@ -1034,23 +964,15 @@ public class SVGParser {
                     gradient.colors.add(color);
                 }
             } else if (localName.equals("g")) {
-                // Check to see if this is the "bounds" layer
-                if ("bounds".equalsIgnoreCase(getStringAttr("id", atts))) {
-                    boundsMode = true;
-                }
-                if (hidden) {
-                    hiddenLevel++;
-                    //Util.debug("Hidden up: " + hiddenLevel);
-                }
-                // Go in to hidden mode if display is "none"
-                if ("none".equals(getStringAttr("display", atts))) {
-                    if (!hidden) {
-                        hidden = true;
-                        hiddenLevel = 1;
-                        //Util.debug("Hidden up: " + hiddenLevel);
-                    }
-                }
-            } else if (!hidden && localName.equals("rect")) {
+                SVGGroup groupNode = new SVGGroup(getStringAttr("id", atts));
+                currentGroupNode.addChild(groupNode);
+                currentGroupNode = groupNode;
+
+                groupNode.setVisibility(doVisibility(getStringAttr("d", atts)));
+            } else if (localName.equals("rect")) {
+                SVGRect rectNode = new SVGRect(getStringAttr("id", atts));
+                currentGroupNode.addChild(rectNode);
+
                 Float x = getFloatAttr("x", atts);
                 if (x == null) {
                     x = 0f;
@@ -1061,72 +983,103 @@ public class SVGParser {
                 }
                 Float width = getFloatAttr("width", atts);
                 Float height = getFloatAttr("height", atts);
-                pushTransform(atts);
+
+                rectNode.setRect(x, y, width, height);
+
+                Matrix matrix = doTransform(getStringAttr("transform", atts));
+                rectNode.setMatrix(matrix);
                 Properties props = new Properties(atts);
                 if (doFill(props, gradientMap)) {
-                    doLimits(x, y, width, height);
-                    canvas.drawRect(x, y, x + width, y + height, paint);
+                    rectNode.setFillPaint(new Paint(paint));
                 }
                 if (doStroke(props)) {
-                    canvas.drawRect(x, y, x + width, y + height, paint);
+                    rectNode.setStrokePaint(new Paint(paint));
                 }
-                popTransform();
-            } else if (!hidden && localName.equals("line")) {
+
+                rectNode.setVisibility(doVisibility(getStringAttr("d", atts)));
+            } else if (localName.equals("line")) {
+                SVGLine lineNode = new SVGLine(getStringAttr("id", atts));
+                currentGroupNode.addChild(lineNode);
+
                 Float x1 = getFloatAttr("x1", atts);
                 Float x2 = getFloatAttr("x2", atts);
                 Float y1 = getFloatAttr("y1", atts);
                 Float y2 = getFloatAttr("y2", atts);
+
+                lineNode.setLine(x1, y1, x2, y2);
+
+                Matrix matrix = doTransform(getStringAttr("transform", atts));
+                lineNode.setMatrix(matrix);
+
                 Properties props = new Properties(atts);
                 if (doStroke(props)) {
-                    pushTransform(atts);
-                    doLimits(x1, y1);
-                    doLimits(x2, y2);
-                    canvas.drawLine(x1, y1, x2, y2, paint);
-                    popTransform();
+                    lineNode.setStrokePaint(new Paint(paint));
                 }
-            } else if (!hidden && localName.equals("circle")) {
+
+                lineNode.setVisibility(doVisibility(getStringAttr("d", atts)));
+            } else if (localName.equals("circle")) {
                 Float centerX = getFloatAttr("cx", atts);
                 Float centerY = getFloatAttr("cy", atts);
                 Float radius = getFloatAttr("r", atts);
+
                 if (centerX != null && centerY != null && radius != null) {
-                    pushTransform(atts);
+                    SVGCircle circleNode = new SVGCircle(getStringAttr("id", atts));
+                    currentGroupNode.addChild(circleNode);
+
+                    circleNode.setCircle(centerX, centerY, radius);
+
+                    Matrix matrix = doTransform(getStringAttr("transform", atts));
+                    circleNode.setMatrix(matrix);
+
                     Properties props = new Properties(atts);
                     if (doFill(props, gradientMap)) {
-                        doLimits(centerX - radius, centerY - radius);
-                        doLimits(centerX + radius, centerY + radius);
-                        canvas.drawCircle(centerX, centerY, radius, paint);
+                        circleNode.setFillPaint(new Paint(paint));
                     }
                     if (doStroke(props)) {
-                        canvas.drawCircle(centerX, centerY, radius, paint);
+                        circleNode.setStrokePaint(new Paint(paint));
                     }
-                    popTransform();
+
+                    circleNode.setVisibility(doVisibility(getStringAttr("d", atts)));
                 }
-            } else if (!hidden && localName.equals("ellipse")) {
+            } else if (localName.equals("ellipse")) {
                 Float centerX = getFloatAttr("cx", atts);
                 Float centerY = getFloatAttr("cy", atts);
                 Float radiusX = getFloatAttr("rx", atts);
                 Float radiusY = getFloatAttr("ry", atts);
+
                 if (centerX != null && centerY != null && radiusX != null && radiusY != null) {
-                    pushTransform(atts);
-                    Properties props = new Properties(atts);
+                    SVGEllipse ellipseNode = new SVGEllipse(getStringAttr("id", atts));
+                    currentGroupNode.addChild(ellipseNode);
+
                     rect.set(centerX - radiusX, centerY - radiusY, centerX + radiusX, centerY + radiusY);
+                    ellipseNode.setEllipse(rect);
+
+                    Matrix matrix = doTransform(getStringAttr("transform", atts));
+                    ellipseNode.setMatrix(matrix);
+
+                    Properties props = new Properties(atts);
                     if (doFill(props, gradientMap)) {
-                        doLimits(centerX - radiusX, centerY - radiusY);
-                        doLimits(centerX + radiusX, centerY + radiusY);
-                        canvas.drawOval(rect, paint);
+                        ellipseNode.setFillPaint(new Paint(paint));
                     }
                     if (doStroke(props)) {
-                        canvas.drawOval(rect, paint);
+                        ellipseNode.setStrokePaint(new Paint(paint));
                     }
-                    popTransform();
+
+                    ellipseNode.setVisibility(doVisibility(getStringAttr("d", atts)));
                 }
-            } else if (!hidden && (localName.equals("polygon") || localName.equals("polyline"))) {
+            } else if (localName.equals("polygon")) {
                 NumberParse numbers = getNumberParseAttr("points", atts);
                 if (numbers != null) {
-                    Path p = new Path();
                     ArrayList<Float> points = numbers.numbers;
                     if (points.size() > 1) {
-                        pushTransform(atts);
+                        SVGPolygon polygonNode = new SVGPolygon(getStringAttr("id", atts));
+                        currentGroupNode.addChild(polygonNode);
+
+                        Path p = new Path();
+
+                        Matrix matrix = doTransform(getStringAttr("transform", atts));
+                        polygonNode.setMatrix(matrix);
+
                         Properties props = new Properties(atts);
                         p.moveTo(points.get(0), points.get(1));
                         for (int i = 2; i < points.size(); i += 2) {
@@ -1134,34 +1087,74 @@ public class SVGParser {
                             float y = points.get(i + 1);
                             p.lineTo(x, y);
                         }
-                        // Don't close a polyline
-                        if (localName.equals("polygon")) {
-                            p.close();
-                        }
+                        p.close();
+
+                        polygonNode.setPath(p);
+
                         if (doFill(props, gradientMap)) {
-                            doLimits(p);
-                            canvas.drawPath(p, paint);
+                            polygonNode.setFillPaint(new Paint(paint));
                         }
                         if (doStroke(props)) {
-                            canvas.drawPath(p, paint);
+                            polygonNode.setStrokePaint(new Paint(paint));
                         }
-                        popTransform();
+
+                        polygonNode.setVisibility(doVisibility(getStringAttr("d", atts)));
                     }
                 }
-            } else if (!hidden && localName.equals("path")) {
-                Path p = doPath(getStringAttr("d", atts));
-                pushTransform(atts);
+            } else if (localName.equals("polyline")) {
+                NumberParse numbers = getNumberParseAttr("points", atts);
+                if (numbers != null) {
+                    ArrayList<Float> points = numbers.numbers;
+                    if (points.size() > 1) {
+                        SVGPolyline polylineNode = new SVGPolyline(getStringAttr("id", atts));
+                        currentGroupNode.addChild(polylineNode);
+
+                        Path p = new Path();
+
+                        Matrix matrix = doTransform(getStringAttr("transform", atts));
+                        polylineNode.setMatrix(matrix);
+
+                        Properties props = new Properties(atts);
+                        p.moveTo(points.get(0), points.get(1));
+                        for (int i = 2; i < points.size(); i += 2) {
+                            float x = points.get(i);
+                            float y = points.get(i + 1);
+                            p.lineTo(x, y);
+                        }
+
+                        polylineNode.setPath(p);
+
+                        if (doFill(props, gradientMap)) {
+                            polylineNode.setFillPaint(new Paint(paint));
+                        }
+                        if (doStroke(props)) {
+                            polylineNode.setStrokePaint(new Paint(paint));
+                        }
+
+                        polylineNode.setVisibility(doVisibility(getStringAttr("d", atts)));
+                    }
+                }
+            } else if (localName.equals("path")) {
+                SVGPath pathNode = new SVGPath(getStringAttr("id", atts));
+                currentGroupNode.addChild(pathNode);
+
+                Path path = doPath(getStringAttr("d", atts));
+                pathNode.setPath(path);
+
+                Matrix matrix = doTransform(getStringAttr("transform", atts));
+                pathNode.setMatrix(matrix);
+
                 Properties props = new Properties(atts);
                 if (doFill(props, gradientMap)) {
-                    doLimits(p);
-                    canvas.drawPath(p, paint);
+                    pathNode.setFillPaint(new Paint(paint));
                 }
                 if (doStroke(props)) {
-                    canvas.drawPath(p, paint);
+                    pathNode.setStrokePaint(new Paint(paint));
                 }
-                popTransform();
-            } else if (!hidden) {
-                Log.d(TAG, "UNRECOGNIZED SVG COMMAND: " + localName);
+
+                pathNode.setVisibility(doVisibility(getStringAttr("d", atts)));
+            } else {
+                Log.e(TAG, "UNRECOGNIZED SVG COMMAND: " + localName);
             }
         }
 
@@ -1171,11 +1164,8 @@ public class SVGParser {
         }
 
         @Override
-        public void endElement(String namespaceURI, String localName, String qName)
-                throws SAXException {
-            if (localName.equals("svg")) {
-                picture.endRecording();
-            } else if (localName.equals("linearGradient")) {
+        public void endElement(String namespaceURI, String localName, String qName) throws SAXException {
+            if (localName.equals("linearGradient")) {
                 if (gradient.id != null) {
                     if (gradient.xlink != null) {
                         Gradient parent = gradientRefMap.get(gradient.xlink);
@@ -1231,19 +1221,10 @@ public class SVGParser {
                     gradientRefMap.put(gradient.id, gradient);
                 }
             } else if (localName.equals("g")) {
-                if (boundsMode) {
-                    boundsMode = false;
-                }
-                // Break out of hidden mode
-                if (hidden) {
-                    hiddenLevel--;
-                    //Util.debug("Hidden down: " + hiddenLevel);
-                    if (hiddenLevel == 0) {
-                        hidden = false;
-                    }
-                }
                 // Clear gradient map
                 gradientMap.clear();
+
+                currentGroupNode = currentGroupNode.getParent();
             }
         }
     }
